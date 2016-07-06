@@ -2,13 +2,14 @@ package main
 
 import (
 	"database/sql"
+	"flag"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/axgle/mahonia"
 	_ "github.com/mattn/go-sqlite3"
 	"io/ioutil"
 	"net/http"
-	"os"
+	//"os"
 	"strconv"
 	"strings"
 )
@@ -43,7 +44,7 @@ func NewDocument(url string) (*goquery.Document, error) {
 	return document, nil
 }
 
-func UpdateStockBasicInfoList(file string) error {
+func UpdateStockBasicInfoList(file string, updateAll bool) error {
 	document, err := NewDocument("http://quote.eastmoney.com/stocklist.html")
 	if err != nil {
 		return err
@@ -57,7 +58,7 @@ func UpdateStockBasicInfoList(file string) error {
 			char := item[1][0]
 			if char == '0' || char == '6' || char == '3' {
 				fmt.Printf("%d %s %s\n", i, item[1], item[0])
-				err = UpdateStockTitle(file, item[1], item[0])
+				err = UpdateStockTitle(file, item[1], item[0], updateAll)
 				if err != nil {
 					fmt.Println(err)
 				}
@@ -217,7 +218,7 @@ func UpdateStockEarnings(file string, ticker string) error {
 	return nil
 }
 
-func UpdateStockMarketCapital(file string, ticker string, value float64) error {
+func UpdateStockMarketCapital(file string, ticker string, value float64, updateAll bool) error {
 	db, err := sql.Open("sqlite3", file)
 	if err != nil {
 		return err
@@ -232,14 +233,16 @@ func UpdateStockMarketCapital(file string, ticker string, value float64) error {
 	if err != nil {
 		return err
 	}
-	err = UpdateStockEarnings(file, ticker)
-	if err != nil {
-		return err
+	if updateAll {
+		err = UpdateStockEarnings(file, ticker)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func UpdateStockTitle(file string, ticker string, title string) error {
+func UpdateStockTitle(file string, ticker string, title string, updateAll bool) error {
 	db, err := sql.Open("sqlite3", file)
 	if err != nil {
 		return err
@@ -272,7 +275,7 @@ func UpdateStockTitle(file string, ticker string, title string) error {
 	if err != nil {
 		return err
 	}
-	err = UpdateStockMarketCapital(file, ticker, value)
+	err = UpdateStockMarketCapital(file, ticker, value, updateAll)
 	if err != nil {
 		return err
 	}
@@ -280,8 +283,10 @@ func UpdateStockTitle(file string, ticker string, title string) error {
 }
 
 func main() {
-	file := os.Args[1]
-	err := UpdateStockBasicInfoList(file)
+	db := flag.String("d", "fortune.db", "use -d <db data path>")
+	updateAll := flag.Bool("ua", false, "use -ua")
+	flag.Parse()
+	err := UpdateStockBasicInfoList(*db, *updateAll)
 	if err != nil {
 		fmt.Println(err)
 		return
