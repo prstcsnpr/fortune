@@ -9,7 +9,6 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"io/ioutil"
 	"net/http"
-	//"os"
 	"strconv"
 	"strings"
 )
@@ -56,7 +55,7 @@ func UpdateStockBasicInfoList(file string, updateAll bool) error {
 		item := strings.Fields(strings.TrimSpace(right))
 		if 2 == len(item) && 6 == len(item[1]) {
 			char := item[1][0]
-			if char == '0' || char == '6' || char == '3' {
+			if strings.HasPrefix(item[1], "000") || strings.HasPrefix(item[1], "002") || char == '6' || char == '3' {
 				fmt.Printf("%d %s %s\n", i, item[1], item[0])
 				err = UpdateStockTitle(file, item[1], item[0], updateAll)
 				if err != nil {
@@ -126,35 +125,59 @@ func ObtainStockMarketCapital(ticker string) (float64, error) {
 	return value, nil
 }
 
-func UpdateStockFieldEarnings(file string, ticker string, date string, value float64, field string) error {
+func Query(file string, query string, f func(*sql.Rows) error, args ...interface{}) error {
 	db, err := sql.Open("sqlite3", file)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	tx, err := db.Begin()
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return err
 	}
-	insertStmt, err := tx.Prepare("insert or ignore into stock_earnings (ticker, date, " + field + ") values (?,?,?)")
+	defer rows.Close()
+	err = f(rows)
 	if err != nil {
 		return err
 	}
-	defer insertStmt.Close()
-	updateStmt, err := tx.Prepare("update stock_earnings set " + field + "=? where ticker=? and date=?")
+	return nil
+}
+
+func GetStockEarning(file string, ticker string) (map[string]map[string]float64, error) {
+	results := make(map[string]map[string]float64)
+	f := func(rows *sql.Rows) error {
+		for rows.Next() {
+			var date string
+			var np float64
+			var equities float64
+			fmt.Println("fuck")
+			err := rows.Scan(&date, &np, &equities)
+			fmt.Printf("%s %f %f\n", date, np, equities)
+			if err != nil {
+				fmt.Println(err)
+				return err
+			}
+			results[date]["np_parent_company_owners"] = np
+			results[date]["equities_parent_company_owners"] = equities
+		}
+		return nil
+	}
+	err := Query(file, "select date, np_parent_company_owners, equities_parent_company_owners from stock_earnings where ticker = ?", f, ticker)
+	if err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+func UpdateStockFieldEarnings(file string, ticker string, date string, value float64, field string) error {
+	err := Exec(file, "insert or ignore into stock_earnings (ticker, date, "+field+") values (?,?,?)", ticker, date, value)
 	if err != nil {
 		return err
 	}
-	defer updateStmt.Close()
-	_, err = insertStmt.Exec(ticker, date, value)
+	err = Exec(file, "update stock_earnings set "+field+"=? where ticker=? and date=?", value, ticker, date)
 	if err != nil {
 		return err
 	}
-	_, err = updateStmt.Exec(value, ticker, date)
-	if err != nil {
-		return err
-	}
-	tx.Commit()
 	return nil
 }
 
@@ -215,21 +238,15 @@ func UpdateStockEarnings(file string, ticker string) error {
 	if err != nil {
 		return err
 	}
+	err = UpdateStockBalanceEarnings(file, ticker)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
 func UpdateStockMarketCapital(file string, ticker string, value float64, updateAll bool) error {
-	db, err := sql.Open("sqlite3", file)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	stmt, err := db.Prepare("update stock_basic_info set market_capital=? where ticker=?")
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	_, err = stmt.Exec(value, ticker)
+	err := Exec(file, "update stock_basic_info set market_capital=? where ticker=?", value, ticker)
 	if err != nil {
 		return err
 	}
@@ -242,35 +259,28 @@ func UpdateStockMarketCapital(file string, ticker string, value float64, updateA
 	return nil
 }
 
-func UpdateStockTitle(file string, ticker string, title string, updateAll bool) error {
+func Exec(file string, query string, args ...interface{}) error {
 	db, err := sql.Open("sqlite3", file)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	tx, err := db.Begin()
+	_, err = db.Exec(query, args...)
 	if err != nil {
 		return err
 	}
-	insertStmt, err := tx.Prepare("insert or ignore into stock_basic_info (ticker, title) values (?,?)")
+	return nil
+}
+
+func UpdateStockTitle(file string, ticker string, title string, updateAll bool) error {
+	err := Exec(file, "insert or ignore into stock_basic_info (ticker, title) values (?,?)", ticker, title)
 	if err != nil {
 		return err
 	}
-	defer insertStmt.Close()
-	_, err = insertStmt.Exec(ticker, title)
+	err = Exec(file, "update stock_basic_info set title=? where ticker=?", title, ticker)
 	if err != nil {
 		return err
 	}
-	updateStmt, err := tx.Prepare("update stock_basic_info set title=? where ticker=?")
-	if err != nil {
-		return err
-	}
-	defer updateStmt.Close()
-	_, err = updateStmt.Exec(title, ticker)
-	if err != nil {
-		return err
-	}
-	tx.Commit()
 	value, err := ObtainStockMarketCapital(ticker)
 	if err != nil {
 		return err
@@ -285,10 +295,18 @@ func UpdateStockTitle(file string, ticker string, title string, updateAll bool) 
 func main() {
 	db := flag.String("d", "fortune.db", "use -d <db data path>")
 	updateAll := flag.Bool("ua", false, "use -ua")
+	show := flag.Bool("s", false, "use -s")
 	flag.Parse()
-	err := UpdateStockBasicInfoList(*db, *updateAll)
-	if err != nil {
-		fmt.Println(err)
-		return
+	if *show {
+		_, err := GetStockEarning(*db, "600216")
+		if err != nil {
+			fmt.Println(err)
+		}
+	} else {
+		err := UpdateStockBasicInfoList(*db, *updateAll)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
 	}
 }
